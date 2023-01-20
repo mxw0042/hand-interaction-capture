@@ -3,6 +3,11 @@ import threading
 import mediapipe as mp
 import numpy as np
 import vg
+import math
+import copy
+import matplotlib.pyplot as plt
+from mediapipe.framework.formats import landmark_pb2
+from scipy.spatial.transform import Rotation as R
 
 import time
 
@@ -11,13 +16,15 @@ import pandas as pd
 import os
 
 
+
+
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 mp_hands = mp.solutions.hands
 
 new_mp_drawing = mp.solutions.drawing_utils
 
-file_path = "C:/Users/mxw00/Documents/meng/hand-interaction-capture"
+file_path = "C:/Users/mxw00/Documents/meng/mediapipe"
 
 class camThread(threading.Thread):
     def __init__(self, previewName, camID):
@@ -120,9 +127,132 @@ def get_palm_area(hand_landmarks):
         y+=[hand_landmarks.landmark[mp_hands.HandLandmark(i)].y]
     return 0.5*np.abs(np.dot(np.array(x),np.roll(np.array(y),1))-np.dot(np.array(y),np.roll(np.array(x),1)))
 
+def normalize(arr):
+    normalized_vector = arr / np.linalg.norm(arr)
+    return normalized_vector
 
- 
+ #reconstruct position from flexion and abduction angles
+def reconstruct_pip(alpha, beta, normal, landmark0, landmark1, landmark2, handedness):
+    p0=np.array([landmark0.x, landmark0.y, landmark0.z])
+    p1=np.array([landmark1.x, landmark1.y, landmark1.z])
+    p2=np.array([landmark2.x, landmark2.y, landmark2.z])
 
+    segment_magnitude=math.dist(p1, p2)
+    segment_direction = p1 - p0
+    segment= segment_magnitude*normalize(segment_direction)
+
+    cross=np.cross(normal, segment_direction)
+
+    r_alpha = R.from_rotvec(alpha * normalize(cross))
+    if handedness=="Right":
+        r_beta = R.from_rotvec(beta * normalize(-normal))
+    else: 
+        r_beta = R.from_rotvec(beta * normalize(normal))
+    rotated_vector_beta = r_beta.apply(segment)
+    rotated_vector_alpha = r_alpha.apply(rotated_vector_beta)
+
+
+    landmark_array=p1+rotated_vector_alpha 
+    landmark=copy.copy(landmark2)
+    landmark.x=landmark_array[0]
+    landmark.y=landmark_array[1]
+    landmark.z=landmark_array[2]
+
+    return landmark
+
+#reconstruct joint position from flexion angle
+def reconstruct_dip(alpha, normal, landmark0, landmark1, landmark2, base, cross):
+    p0=np.array([landmark0.x, landmark0.y, landmark0.z])
+    p1=np.array([landmark1.x, landmark1.y, landmark1.z])
+    p2=np.array([landmark2.x, landmark2.y, landmark2.z])
+    base=np.array([base.x, base.y, base.z])
+
+    segment_magnitude=math.dist(p1, p2)
+    segment_direction = base - p0
+    segment= segment_magnitude*normalize(segment_direction)
+
+    # print("alpha: ", alpha)
+
+    r_alpha = R.from_rotvec(alpha * normalize(cross))
+
+    rotated_vector_alpha = r_alpha.apply(segment)
+
+
+    landmark_array=base+rotated_vector_alpha 
+    landmark=copy.copy(landmark2)
+    
+    landmark.x=landmark_array[0]
+    landmark.y=landmark_array[1]
+    landmark.z=landmark_array[2]
+
+    #build landmark object?
+    return landmark
+
+#reconstruct finger tip position from flexion angle
+def reconstruct_tip(alpha, normal, base0, landmark1, landmark2, base1, cross):
+    p1=np.array([landmark1.x, landmark1.y, landmark1.z])
+    p2=np.array([landmark2.x, landmark2.y, landmark2.z])
+    base1=np.array([base1.x, base1.y, base1.z])
+    base0=np.array([base0.x, base0.y, base0.z])
+
+    segment_magnitude=math.dist(p1, p2)
+    segment_direction = base1 - base0
+    segment= segment_magnitude*normalize(segment_direction)
+
+    r_alpha = R.from_rotvec(alpha * normalize(cross))
+
+    rotated_vector_alpha = r_alpha.apply(segment)
+
+
+    landmark_array=base1+rotated_vector_alpha 
+    landmark=copy.copy(landmark2)
+    
+    landmark.x=landmark_array[0]
+    landmark.y=landmark_array[1]
+    landmark.z=landmark_array[2]
+
+    #build landmark object?
+    return landmark
+
+
+def reconstruct_landmarks_from_angles(hand_landmarks, joint_angles, handedness):
+    landmarks=[]
+    for i in range(21):
+        landmarks.append(hand_landmarks.landmark[mp_hands.HandLandmark(i)])
+        
+    reconstructed_hand_landmarks=copy.copy(landmarks)
+    hand=1
+    if handedness=="Right":
+        hand=-1
+    thumb_index_normal=-get_palm_normal(landmarks[1], landmarks[2], landmarks[5])
+    index_middle_normal=-get_palm_normal(landmarks[0], landmarks[5], landmarks[9])
+    middle_ring_normal=-get_palm_normal(landmarks[0], landmarks[9], landmarks[13])
+    ring_pinky_normal=-get_palm_normal(landmarks[0], landmarks[13], landmarks[17])
+
+    normals=[thumb_index_normal, index_middle_normal, middle_ring_normal, middle_ring_normal, ring_pinky_normal]
+
+    for i in range(5):
+        cross=get_cross(landmarks[0], landmarks[1+i*4], hand*normals[i])
+        reconstructed_hand_landmarks[2+i*4]=reconstruct_pip(joint_angles[0+i*4], joint_angles[3+i*4], hand*normals[i], landmarks[0], landmarks[1+i*4], landmarks[2+i*4], handedness)
+        reconstructed_hand_landmarks[3+i*4]=reconstruct_dip(joint_angles[1+i*4], hand*normals[i], landmarks[1+i*4], landmarks[2+i*4], landmarks[3+i*4], reconstructed_hand_landmarks[2+i*4], cross)
+        reconstructed_hand_landmarks[4+i*4]=reconstruct_tip(joint_angles[2+i*4], hand*normals[i], reconstructed_hand_landmarks[2+i*4], landmarks[3+i*4], landmarks[4+i*4], reconstructed_hand_landmarks[3+i*4], cross)
+
+    new_landmarks = landmark_pb2.NormalizedLandmarkList(landmark=reconstructed_hand_landmarks)
+
+    return new_landmarks
+
+#michael's synergies
+manipulation_e1=normalize(np.array([[0.15075, 0.04867, -0.048864, 0.011474, 0.13871, 0.10185, 0.013991, 0.006332, 0.16573, 0.11729, 0.020231, 0.0096837, 0.15333, 0.176, 0.054559, -0.026265, 0.11766, 0.091763, 0.010513, -0.011513]])).T
+manipulation_e2=normalize(np.array([[0.12939, -0.040741, -0.033309, -0.025255, 0.048632, -0.0051425, 0.0036897, -0.0029587, -0.025369, -0.0073484, -0.004823, -0.0055665, -0.058177, -0.02668, -0.0038935, 0.014417, -0.04606, -0.025093, 0.0017663, 0.0058283]])).T
+manipulation_e3=normalize(np.array([[-0.126, -0.075822, -0.023047, 0.012231, -0.053607, 0.11037, 0.038378, 0.011935, -0.091651, 0.16981, 0.058706, 0.0050746, -0.099912, 0.2319, 0.10745, -0.022381, -0.071467, 0.12184, 0.018506, -0.036332]])).T
+manipulation_e4=normalize(np.array([[0.07647, -0.048274, -0.024676, 0.039967, 0.15612, -0.02695, -0.00093293, -0.041477, 0.11587, -0.094454, -0.029349, -0.0036209, -0.079993, -0.01941, -0.013295, 0.048931, -0.18134, 0.061865, 0.009479, 0.050853]])).T
+
+r2g_e1=normalize(np.array([0.16891, 0.025521, -0.032352, -0.0069859, 0.099574, 0.095142, 0.0073953, 0.0092749, 0.14129, 0.15698, 0.032075, 0.014296, 0.15207, 0.18345, 0.047436, -0.038703, 0.12477, 0.088426, 0.0053546, -0.027952])).T
+r2g_e2=normalize(np.array([0.20385, -0.0092425, -0.041134, -0.0091354, 0.026853, 0.032833, 9.9717e-05, 0.0089803, -0.038916, -1.7963e-06, -0.0060575, 0.001091, -0.0018351, -0.034834, -0.035571, -0.011226, -0.02189, -0.055721, -0.019561, -0.014771])).T
+r2g_e3=normalize(np.array([-0.026047, -0.05778, 0.132, -0.0090842, -0.067948, 0.023009, 0.01701, 0.043227, -0.17779, 0.13501, 0.056916, 0.0019381, -0.10527, 0.15653, 0.078045, -0.047216, -0.034363, 0.085201, 0.010366, -0.054433])).T
+r2g_e4=normalize(np.array([-0.050509, -0.12138, 0.10046, -0.0080373, 0.23192, -0.0086001, 0.0097201, -0.071284, 0.19034, -0.086343, -0.031458, 0.0067945, -0.085191, -0.085097, -0.056322, 0.057298, -0.031216, 0.018081, 0.0027885, 0.086371])).T
+
+synergies=np.hstack((manipulation_e1,manipulation_e2, manipulation_e3))
 
 
 ##############################################################
@@ -162,13 +292,29 @@ def cam_preview(previewName, camID):
                             elif idx==1:
                                 landmark_to_joint_angles_left.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, [time.time(), results.multi_handedness[idx].classification[0].score, get_palm_area(hand_landmarks)]))
                         
+                        joints=calc_joint_angles(hand_landmarks)
+
+                        lambdas = np.linalg.lstsq(synergies, joints, rcond=None)
+                    
+                        #use this to visualize the position to joints to position reconstruction
+                        #new_landmarks=reconstruct_landmarks_from_angles(hand_landmarks, joints, results.multi_handedness[idx].classification[0].label)
+
+                        #use this to visualize the synergy reconstruction
+                        new_landmarks=reconstruct_landmarks_from_angles(hand_landmarks, synergies@lambdas[0], results.multi_handedness[idx].classification[0].label)
+      
                         ### if you want to visualize the joint angles, you can uncomment this
                         mp_drawing.draw_landmarks(
                             image,
-                            hand_landmarks,
+                            hand_landmarks, #hand_landmarks,
                             mp_hands.HAND_CONNECTIONS,
                             mp_drawing_styles.get_default_hand_landmarks_style(),
                             mp_drawing_styles.get_default_hand_connections_style())
+
+                        new_mp_drawing.draw_landmarks(
+                            image,
+                            new_landmarks,
+                            mp_hands.HAND_CONNECTIONS
+                            )
                 # Flip the image horizontally for a selfie-view display.
                 cv2.imshow(previewName, cv2.flip(image, 1))
                 if key == 27:  # exit on ESC
@@ -181,7 +327,7 @@ def cam_preview(previewName, camID):
     
 
 def start_cam_threads(numCams):
-    if not os .path.exists(file_path+"/left"):
+    if not os.path.exists(file_path+"/left"):
         os.makedirs(file_path+"/left")
     if not os.path.exists(file_path+"/right"):
         os.makedirs(file_path+"/right")
@@ -216,7 +362,7 @@ def consolidate_hands():
     df_concat_left.to_csv(file_path+'/joint_angles_left.csv', index=False)
     df_concat_right.to_csv(file_path+'/joint_angles_right.csv', index=False)
    
-start_cam_threads(3)
+start_cam_threads(2)
 
 
 

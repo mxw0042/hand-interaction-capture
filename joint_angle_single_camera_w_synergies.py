@@ -323,7 +323,7 @@ with mp_hands.Hands(
           mp_drawing_styles.get_default_hand_landmarks_style(),
           mp_drawing_styles.get_default_hand_connections_style())
 
-        if len(landmark_to_joint_angles)>=100:
+        if len(landmark_to_joint_angles)>=300:
           if not set_synergies_flag:
             set_synergies_flag=True
             np_landmarks=np.squeeze(np.array(landmark_to_joint_angles))
