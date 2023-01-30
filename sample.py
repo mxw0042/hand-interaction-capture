@@ -128,9 +128,9 @@ with mp_hands.Hands(
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     if results.multi_hand_landmarks:
       for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
-        if idx==0:
+        if results.multi_handedness[idx].classification[0].label=="Left":
           landmark_to_joint_angles_0.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, time.time()))
-        elif idx==1:
+        elif results.multi_handedness[idx].classification[0].label=="Right":
           landmark_to_joint_angles_1.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, time.time()))
 
         ### if you want to visualize the joint angles, you can uncomment this
@@ -155,8 +155,8 @@ with mp_hands.Hands(
 print(landmark_to_joint_angles_0)
 print(landmark_to_joint_angles_1)
 
-np.savetxt("C:/Users/mxw00/Documents/meng/hand-interaction-capture/sample_data/landmark_to_joint_angles_0.csv", landmark_to_joint_angles_0, delimiter=",")
-np.savetxt("C:/Users/mxw00/Documents/meng/hand-interaction-capture/sample_data/landmark_to_joint_angles_1.csv", landmark_to_joint_angles_1, delimiter=",")
+np.savetxt("C:/Users/mxw00/Documents/meng/hand-interaction-capture/sample_data/landmark_to_joint_angles_left.csv", landmark_to_joint_angles_0, delimiter=",")
+np.savetxt("C:/Users/mxw00/Documents/meng/hand-interaction-capture/sample_data/landmark_to_joint_angles_right.csv", landmark_to_joint_angles_1, delimiter=",")
 
 cap.release()
 
