@@ -8,12 +8,18 @@ import copy
 import matplotlib.pyplot as plt
 from mediapipe.framework.formats import landmark_pb2
 from scipy.spatial.transform import Rotation as R
+import yaml
+from types import SimpleNamespace
 
 import time
 
 from scipy.spatial.transform import Rotation as R
 import pandas as pd
 import os
+
+import torch
+import torch.multiprocessing
+import recording.util as util
 
 
 
@@ -24,7 +30,7 @@ mp_hands = mp.solutions.hands
 
 new_mp_drawing = mp.solutions.drawing_utils
 
-file_path = "C:/Users/mxw00/Documents/meng/mediapipe"
+file_path = "C:/Users/Maggie/hand-interaction-capture"
 
 class camThread(threading.Thread):
     def __init__(self, previewName, camID):
@@ -259,11 +265,19 @@ synergies=np.hstack((manipulation_e1,manipulation_e2, manipulation_e3))
 
 
 def cam_preview(previewName, camID):
+    best_model = torch.load(util.find_latest_checkpoint(config))
+    best_model.eval()
+
     landmark_to_joint_angles_right=[]
     landmark_to_joint_angles_left=[]
 
     cv2.namedWindow(previewName)
     cam = cv2.VideoCapture(camID)
+    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+    cam.set(cv2.CAP_PROP_FPS, 30)
+
     with mp_hands.Hands(
         model_complexity=0,
         min_detection_confidence=0.5,
@@ -279,6 +293,8 @@ def cam_preview(previewName, camID):
     
                 frame.flags.writeable = False
                 image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                scale = 355
+                image = crop_and_resize(image, scale)
                 results = hands.process(image)
 
                 # Draw the hand annotations on the image.
@@ -287,20 +303,26 @@ def cam_preview(previewName, camID):
                 if results.multi_hand_landmarks:
                     for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
                         if get_palm_area(hand_landmarks)>=0.01:
-                            if idx==0:
+                            handedness = results.multi_handedness[idx].classification[0].label
+                            if handedness=='Left':
                                 landmark_to_joint_angles_right.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, [time.time(), results.multi_handedness[idx].classification[0].score, get_palm_area(hand_landmarks)]))
-                            elif idx==1:
+                            elif handedness=='Right':
                                 landmark_to_joint_angles_left.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, [time.time(), results.multi_handedness[idx].classification[0].score, get_palm_area(hand_landmarks)]))
                         
                         joints=calc_joint_angles(hand_landmarks)
 
-                        lambdas = np.linalg.lstsq(synergies, joints, rcond=None)
+                        
+                        force_pred = run_model(image, best_model)
+
+                        
                     
                         #use this to visualize the position to joints to position reconstruction
-                        #new_landmarks=reconstruct_landmarks_from_angles(hand_landmarks, joints, results.multi_handedness[idx].classification[0].label)
+                        new_landmarks=reconstruct_landmarks_from_angles(hand_landmarks, joints, results.multi_handedness[idx].classification[0].label)
 
+                        image = cv2.addWeighted(image, 0.7, util.pressure_to_colormap(force_pred), 1.0, 0.0)
                         #use this to visualize the synergy reconstruction
-                        new_landmarks=reconstruct_landmarks_from_angles(hand_landmarks, synergies@lambdas[0], results.multi_handedness[idx].classification[0].label)
+                        #lambdas = np.linalg.lstsq(synergies, joints, rcond=None)
+                        #new_landmarks=reconstruct_landmarks_from_angles(hand_landmarks, synergies@lambdas[0], results.multi_handedness[idx].classification[0].label)
       
                         ### if you want to visualize the joint angles, you can uncomment this
                         mp_drawing.draw_landmarks(
@@ -310,11 +332,13 @@ def cam_preview(previewName, camID):
                             mp_drawing_styles.get_default_hand_landmarks_style(),
                             mp_drawing_styles.get_default_hand_connections_style())
 
-                        new_mp_drawing.draw_landmarks(
-                            image,
-                            new_landmarks,
-                            mp_hands.HAND_CONNECTIONS
-                            )
+                        #use this to overlay synergy reconstruction
+                        # new_mp_drawing.draw_landmarks(
+                        #     image,
+                        #     new_landmarks,
+                        #     mp_hands.HAND_CONNECTIONS
+                        #     )
+
                 # Flip the image horizontally for a selfie-view display.
                 cv2.imshow(previewName, cv2.flip(image, 1))
                 if key == 27:  # exit on ESC
@@ -361,8 +385,60 @@ def consolidate_hands():
         
     df_concat_left.to_csv(file_path+'/joint_angles_left.csv', index=False)
     df_concat_right.to_csv(file_path+'/joint_angles_right.csv', index=False)
+
+
+
+disp_x = 480 * 2
+disp_y = 384 * 2
+aspect_ratio = 480 / 384
+
+
+def run_model(img, best_model):
+    # Takes in a cropped OpenCV-formatted image, does the preprocessing, runs the network, and the postprocessing
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img.astype('float32') / 255
+    img = util.resnet_preprocessor(img)
+    img = img.transpose(2, 0, 1).astype('float32')
+    img = torch.tensor(img).unsqueeze(0)
+
+    with torch.no_grad():
+        force_pred_class = best_model(img.cuda())
+        force_pred_class = torch.argmax(force_pred_class, dim=1)
+        force_pred_scalar = util.classes_to_scalar(force_pred_class, config.FORCE_THRESHOLDS)
+        force_pred_scalar = force_pred_scalar.detach().squeeze().cpu().numpy()
+
+    return force_pred_scalar
+
+
+def crop_and_resize(img, scale):
+    y_scale = int(scale / aspect_ratio)
+
+    start_x_int = max(img.shape[1] // 2 - scale, 0)
+    end_x_int = min(img.shape[1] // 2 + scale, img.shape[1])
+    start_y_int = max(img.shape[0] // 2 - y_scale, 0)
+    end_y_int = min(img.shape[0] // 2 + y_scale, img.shape[0])
+    crop_frame = img[start_y_int:end_y_int, start_x_int:end_x_int, :]
+
+    resize_frame = cv2.resize(crop_frame, (480, 384))
+
+    return resize_frame
+
+if __name__ == "__main__":
+
+    with open('./config/paper.yml', 'r') as stream:
+        data = yaml.safe_load(stream)
+
+    data_obj = SimpleNamespace(**data)
+    data_obj.CONFIG_NAME = 'paper'
+    config = data_obj
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    start_cam_threads(2)
+
+
+
    
-start_cam_threads(2)
+
 
 
 
