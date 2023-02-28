@@ -20,7 +20,7 @@ import os
 import torch
 import torch.multiprocessing
 import recording.util as util
-
+from scipy.spatial.distance import cdist
 
 
 
@@ -263,6 +263,11 @@ synergies=np.hstack((manipulation_e1,manipulation_e2, manipulation_e3))
 
 ##############################################################
 
+def get_image_coordinate(x, y, shape): 
+    
+    relative_x = int(np.clip(x, 0, 1) * (shape[0]-1))
+    relative_y = int(np.clip(y, 0, 1) * (shape[1]-1))
+    return relative_x, relative_y
 
 def cam_preview(previewName, camID):
     best_model = torch.load(util.find_latest_checkpoint(config))
@@ -314,7 +319,19 @@ def cam_preview(previewName, camID):
                         
                         force_pred = run_model(image, best_model)
 
-                        
+                        shape = image.shape 
+                        fingertips=[4, 8, 12, 16, 20]
+                        contact=[0, 0, 0, 0, 0]
+                        if np.any(force_pred):
+                            
+                            for i, landmark in enumerate(hand_landmarks.landmark):
+                                if i in fingertips:
+                                    x, y = get_image_coordinate(landmark.y, landmark.x, shape)
+                                    if np.min(cdist([[x, y]],np.transpose(np.nonzero(force_pred))))<20:
+                                        #print(i, ": ", force_pred[x][y])
+                                        # how to get pressure estimate??
+                                    
+
                     
                         #use this to visualize the position to joints to position reconstruction
                         new_landmarks=reconstruct_landmarks_from_angles(hand_landmarks, joints, results.multi_handedness[idx].classification[0].label)
