@@ -302,34 +302,40 @@ def cam_preview(previewName, camID):
                 image = crop_and_resize(image, scale)
                 results = hands.process(image)
 
+                
+                
+
                 # Draw the hand annotations on the image.
                 image.flags.writeable = True
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                 if results.multi_hand_landmarks:
                     for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
-                        if get_palm_area(hand_landmarks)>=0.01:
-                            handedness = results.multi_handedness[idx].classification[0].label
-                            if handedness=='Left':
-                                landmark_to_joint_angles_right.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, [time.time(), results.multi_handedness[idx].classification[0].score, get_palm_area(hand_landmarks)]))
-                            elif handedness=='Right':
-                                landmark_to_joint_angles_left.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, [time.time(), results.multi_handedness[idx].classification[0].score, get_palm_area(hand_landmarks)]))
-                        
-                        joints=calc_joint_angles(hand_landmarks)
-
-                        
                         force_pred = run_model(image, best_model)
 
                         shape = image.shape 
                         fingertips=[4, 8, 12, 16, 20]
                         contact=[0, 0, 0, 0, 0]
                         if np.any(force_pred):
-                            
                             for i, landmark in enumerate(hand_landmarks.landmark):
                                 if i in fingertips:
                                     x, y = get_image_coordinate(landmark.y, landmark.x, shape)
                                     if np.min(cdist([[x, y]],np.transpose(np.nonzero(force_pred))))<20:
                                         #print(i, ": ", force_pred[x][y])
-                                        # how to get pressure estimate??
+                                        # how to get pressure estimate for just one finger (what if two down?)
+                                        #t_sound-t_contact= sound delay, estimation of contact detection
+                                        
+                                        contact[(i//4)-1]=np.max(force_pred)
+                        #if get_palm_area(hand_landmarks)>=0.01:
+                        handedness = results.multi_handedness[idx].classification[0].label
+                        if handedness=='Left':
+                            landmark_to_joint_angles_right.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, [time.time(), results.multi_handedness[idx].classification[0].score, get_palm_area(hand_landmarks)]+contact))
+                        elif handedness=='Right':
+                            landmark_to_joint_angles_left.append(np.insert(calc_joint_angles(hand_landmarks).T.flatten(), 0, [time.time(), results.multi_handedness[idx].classification[0].score, get_palm_area(hand_landmarks)]+contact))
+                    
+                        joints=calc_joint_angles(hand_landmarks)
+
+                        
+                        
                                     
 
                     
